@@ -10,4 +10,5 @@ setup(
     long_description="",
     url="https://github.com/aerodiduch/aerocommons",
     python_requires=">=3.6",
+    install_requires=["requests"],
 )
