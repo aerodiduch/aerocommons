@@ -1,5 +1,6 @@
 # Failsafe decorator
 import traceback
+from .api import send_error_log, send_text_message
 
 
 def failsafe(func):
@@ -22,9 +23,8 @@ def failsafe(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except Exception as e:
-            print(f"Error: {e}")
-            return None
+        except Exception:
+            pass
         finally:
             return "200 HTTPS OK"
 
