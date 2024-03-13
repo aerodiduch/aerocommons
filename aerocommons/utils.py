@@ -21,13 +21,17 @@ def failsafe(func, from_facebook=False):
             # code that could potentially raise an exception
     """
 
+    # TODO: Estandarizar el payload para poder saber
+    # siempre de donde sale el numero de telefono
     def wrapper(*args, **kwargs):
+        if from_facebook:
+            request = kwargs.get("request")
+            data = FacebookParser(await request.json())
+            phone_number = data.message_number
+
         try:
             return func(*args, **kwargs)
         except Exception:
-            if from_facebook:
-                request = kwargs.get("request")
-                data = FacebookParser(await request.json())
 
             send_error_log(
                 number=None,
@@ -35,8 +39,11 @@ def failsafe(func, from_facebook=False):
                 traceback=traceback.format_exc(),
             )
 
-            # TODO: Estandarizar el payload para poder saber
-            # siempre de donde sale el numero de telefono
+            send_text_message(
+                "data",
+                phone_number,
+                "🤖 Bzz! Temporalmente, *debido a la situación económica*, Aerobot *estará disponible solo para usuarios suscriptos*. \nSi queres *seguir usando aerobot como hasta ahora*, podes suscribrite por *$1500/mes* 👉🏻 https://aerobot.com.ar/apoyar.\n\nSi queres conocer más acerca de esta decisión 👉🏻 https://aerobot.com.ar/comunicado ",
+            )
 
         finally:
             return "200 HTTPS OK"
