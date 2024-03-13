@@ -4,7 +4,7 @@ from .api import send_error_log, send_text_message
 from .request_parser import FacebookParser
 
 
-def failsafe(func, from_facebook=False):
+async def failsafe(func, from_facebook=False):
     """
     A decorator that wraps a function and handles exceptions by printing
     an error message and returning None.
@@ -23,11 +23,14 @@ def failsafe(func, from_facebook=False):
 
     # TODO: Estandarizar el payload para poder saber
     # siempre de donde sale el numero de telefono
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
+        req = (await kwargs.get("request")).json()
+        phone_number = req.get("phone_number")
+
         if from_facebook:
             request = kwargs.get("request")
             data = FacebookParser(await request.json())
-            phone_number = data.message_number
+            phone_number = data
 
         try:
             return func(*args, **kwargs)
@@ -42,7 +45,7 @@ def failsafe(func, from_facebook=False):
             send_text_message(
                 "data",
                 phone_number,
-                "🤖 Bzz! Temporalmente, *debido a la situación económica*, Aerobot *estará disponible solo para usuarios suscriptos*. \nSi queres *seguir usando aerobot como hasta ahora*, podes suscribrite por *$1500/mes* 👉🏻 https://aerobot.com.ar/apoyar.\n\nSi queres conocer más acerca de esta decisión 👉🏻 https://aerobot.com.ar/comunicado ",
+                "🤖 Bzz! Hubo un problema procesando tu solicitud, ya estoy investigando que pasó 🐒 🔧",
             )
 
         finally:
