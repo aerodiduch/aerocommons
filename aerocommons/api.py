@@ -1,4 +1,3 @@
-from .utils import failsafe
 import requests
 
 
@@ -11,7 +10,7 @@ def send_text_message(data, number, msg, ads=None):
         msg (str): String containing the message.
         ads (_type_, optional): _description_. Defaults to None.
     """
-    requests.post(
+    return requests.post(
         "http://sendmsg:60611/sendmsg",
         json={
             "data": data,
@@ -25,7 +24,7 @@ def send_text_message(data, number, msg, ads=None):
 
 
 def send_error_log(number=None, intent=None, traceback=None):
-    requests.post(
+    return requests.post(
         "http://aerobot-error-notifier:60615/usageerror",
         json={"number": number, "intent": intent, "traceback": traceback},
         timeout=2,
