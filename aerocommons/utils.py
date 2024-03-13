@@ -24,7 +24,11 @@ def failsafe(func):
         try:
             return func(*args, **kwargs)
         except Exception:
-            pass
+            send_error_log(
+                number=None,
+                intent=func.__name__,
+                traceback=traceback.format_exc(),
+            )
         finally:
             return "200 HTTPS OK"
 
