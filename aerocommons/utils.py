@@ -2,6 +2,7 @@
 import traceback
 from .api import send_error_log, send_text_message
 from .request_parser import FacebookParser
+from .messages import DEFAULT_MESSAGES
 
 
 async def failsafe(func, from_facebook=False):
@@ -43,9 +44,7 @@ async def failsafe(func, from_facebook=False):
             )
 
             send_text_message(
-                "data",
-                phone_number,
-                "🤖 Bzz! Hubo un problema procesando tu solicitud, ya estoy investigando que pasó 🐒 🔧",
+                "data", phone_number, DEFAULT_MESSAGES.get("error_message")
             )
 
         finally:
