@@ -2,13 +2,14 @@ import logging
 import requests
 
 
-def _send_to_notifier(record_name: str, message: str):
+def _send_to_notifier(service: str, message: str):
     try:
         requests.post(
             "http://aerobot-error-notifier:60615/usageerror",
             json={
+                "service": service,
                 "number": None,
-                "intent": record_name,
+                "intent": None,
                 "traceback": message,
                 "additional_data": None,
             },

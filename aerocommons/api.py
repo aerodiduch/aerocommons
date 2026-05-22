@@ -24,11 +24,12 @@ def send_text_message(data, number, msg, ads=None, intent="get_notam"):
     )
 
 
-def send_error_log(number=None, intent=None, traceback=None, additional_data=None):
+def send_error_log(number=None, intent=None, traceback=None, additional_data=None, service=None):
     try:
         requests.post(
             "http://aerobot-error-notifier:60615/usageerror",
             json={
+                "service": service,
                 "number": number,
                 "intent": intent,
                 "traceback": traceback,
