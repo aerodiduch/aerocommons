@@ -57,17 +57,6 @@ def send_buttons_message(
         pass
 
 
-def send_location(number: str, data: dict):
-    try:
-        requests.post(
-            "http://sendmsg:60611/sendlocation",
-            json={"target_number": number, "data": data},
-            timeout=10,
-        )
-    except Exception:
-        return False
-
-
 def is_user_premium(phone_number: str = None):
     """Checks if user is premium or not. Returns a dict containing relevant user data."""
     response = requests.post(
