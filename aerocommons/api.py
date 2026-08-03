@@ -65,3 +65,37 @@ def is_user_premium(phone_number: str = None):
         json={"op": "premium_check", "parameter": phone_number},
     )
     return response.json()
+
+
+def get_template(key: str, service: str = None, fallback: str = None) -> str:
+    """Resuelve un mensaje del catálogo centralizado (Mongo, vía
+    aerobot-default-messages) por su `key`. `fallback` es obligatorio en la
+    práctica -- es lo que se devuelve si default-messages no responde (Mongo
+    caído, timeout, lo que sea), para que el envío de mensajes del bot nunca
+    dependa de que este sistema esté sano. Mismo criterio que ya usa
+    default-messages internamente (fallback a su dict estático si Mongo/
+    db-connector no responden).
+
+    Si default-messages no respondió bien, se reporta al Error Tracker --
+    a diferencia del resto de las funciones de este módulo, acá SÍ importa
+    que quede visible: es el único lugar donde "todo sigue funcionando"
+    (el fallback) puede estar escondiendo que el sistema de templates está
+    degradado, sin que nadie se entere.
+    """
+    try:
+        resp = requests.post(
+            "http://default-messages:60610/get_message",
+            json={"template": key, "service": service},
+            timeout=3,
+        )
+        value = resp.json().get("response")
+        if value:
+            return value
+    except Exception:
+        pass
+    send_error_log(
+        intent="get_template_fallback",
+        additional_data=f"key={key} service={service}",
+        service=service,
+    )
+    return fallback
