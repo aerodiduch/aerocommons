@@ -55,6 +55,43 @@ def get(url: str, *, impersonate: str = DEFAULT_IMPERSONATE, http3: bool = False
     return _curl.get(url, impersonate=impersonate, **kwargs)
 
 
+def _traducir_files(files):
+    """Convierte el `files=` de `requests` al `multipart` de curl_cffi.
+
+    curl_cffi **no soporta `files=`**: levanta `NotImplementedError` en runtime,
+    no al importar. El 16/ago/2026 eso rompió la subida del video del radar a
+    Meta -- el servicio quedó arriba, sin errores en el arranque, y respondiendo
+    "hubo un problema al procesar el video" a cualquiera que pidiera un radar.
+
+    Se traduce acá y no en cada servicio para que la migración de un `files=`
+    sea copiar y pegar como el resto, y no una trampa que se descubre en
+    producción.
+
+    Acepta las formas de `requests` que usamos:
+        {"file": open(...)}
+        {"file": ("radar.mp4", open(...), "video/mp4")}
+        {"file": ("radar.mp4", b"...", "video/mp4")}
+    """
+    from curl_cffi import CurlMime
+
+    mp = CurlMime()
+    for nombre, valor in files.items():
+        filename, contenido, content_type = None, valor, None
+        if isinstance(valor, (tuple, list)):
+            filename = valor[0]
+            contenido = valor[1]
+            content_type = valor[2] if len(valor) > 2 else None
+
+        if hasattr(contenido, "read"):
+            # Un file object ya abierto: se lee entero. Los archivos que
+            # subimos son videos de pocos MB, no hay razón para streamear.
+            contenido = contenido.read()
+
+        mp.addpart(name=nombre, filename=filename,
+                   content_type=content_type, data=contenido)
+    return mp
+
+
 def post(url: str, *, impersonate: str = DEFAULT_IMPERSONATE, http3: bool = False, **kwargs):
     """POST a un servicio externo, con fingerprint de browser real.
 
@@ -62,9 +99,14 @@ def post(url: str, *, impersonate: str = DEFAULT_IMPERSONATE, http3: bool = Fals
     SIEMPRE por keyword (`data=...` o `json=...`) -- curl_cffi no acepta el
     segundo argumento posicional. Migrar sin ajustar eso es un TypeError en
     runtime.
+
+    `files=` se acepta con la sintaxis de `requests` y se traduce solo (ver
+    `_traducir_files`): curl_cffi usa `multipart` y rechaza `files`.
     """
     if http3:
         kwargs["http_version"] = CurlHttpVersion.V3
+    if "files" in kwargs:
+        kwargs["multipart"] = _traducir_files(kwargs.pop("files"))
     return _curl.post(url, impersonate=impersonate, **kwargs)
 
 
