@@ -66,3 +66,27 @@ def post(url: str, *, impersonate: str = DEFAULT_IMPERSONATE, http3: bool = Fals
     if http3:
         kwargs["http_version"] = CurlHttpVersion.V3
     return _curl.post(url, impersonate=impersonate, **kwargs)
+
+
+def put(url: str, *, impersonate: str = DEFAULT_IMPERSONATE, http3: bool = False, **kwargs):
+    """PUT a un servicio externo, con fingerprint de browser real.
+
+    Agregado el 16/ago/2026 al migrar MercadoPago: el hub cancela suscripciones
+    con `PUT /preapproval/{id}`, y sin esto la migración quedaba a medias o
+    tenía que importar curl_cffi por su cuenta en un servicio que ya depende de
+    aerocommons -- justo lo que este módulo existe para evitar.
+    """
+    return request("PUT", url, impersonate=impersonate, http3=http3, **kwargs)
+
+
+def request(method: str, url: str, *, impersonate: str = DEFAULT_IMPERSONATE,
+            http3: bool = False, **kwargs):
+    """Cualquier verbo, para los casos que `get`/`post`/`put` no cubren.
+
+    Existe para que agregar un método nuevo no obligue a saltarse este módulo:
+    la regla dura es que **nada** salga con `requests` pelado, así que el
+    escape tiene que estar acá adentro y no en cada servicio.
+    """
+    if http3:
+        kwargs["http_version"] = CurlHttpVersion.V3
+    return _curl.request(method, url, impersonate=impersonate, **kwargs)
