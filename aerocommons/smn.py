@@ -34,10 +34,20 @@ logger = get_logger(__name__)
 
 FETCHER = os.getenv("SMN_FETCH_URL", "http://smn-fetch:60630")
 
-#: Cuánto esperar al fetcher. Un pedido que llega a arrancar el browser tarda
-#: ~25s, y el token cacheado vuelve en milisegundos. 40 cubre el peor caso sin
-#: quedarse colgado si el browser murió a mitad de camino.
-TIMEOUT_FETCHER = int(os.getenv("SMN_FETCH_TIMEOUT", "40"))
+#: Cuánto esperar al fetcher.
+#:
+#: 150 y no 40, que es lo que decía acá antes y era un error de dimensionado.
+#: El peor camino real no es "arrancar el browser" (~25s): es que Cloudflare
+#: sirva el challenge y el browser no lo resuelva a la primera, que **pasa** —
+#: medido el 18/ago, dos arranques seguidos dieron uno 200 limpio y el otro 403
+#: después de 40s. Ahí el fetcher cierra el browser, lo rearma con identidad
+#: nueva y reintenta: 40s de challenge + ~25s de arranque + la navegación, o
+#: sea 90-120s.
+#:
+#: Con el timeout en 40 el cliente se iba al camino directo **justo en los
+#: casos donde el browser estaba por resolverlo** — el peor momento posible,
+#: porque son exactamente las veces en que el directo tampoco va a poder.
+TIMEOUT_FETCHER = int(os.getenv("SMN_FETCH_TIMEOUT", "150"))
 
 #: Los que el browser tiene que resolver. El resto sale directo.
 HOSTS_BLOQUEADOS = {"www.smn.gob.ar", "ssl.smn.gob.ar"}
