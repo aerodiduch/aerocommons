@@ -1,132 +1,122 @@
-"""Cliente único para todo lo que Aerobot consulta del SMN.
+"""Cliente del SMN: cada host por el camino que le funciona.
 
-Existe porque el SMN está detrás de Cloudflare y **el perfil de browser que
-pasa el challenge cambia con el tiempo**: el 16/ago/2026 `firefox` pasaba 7 de
-8 y todo Chromium daba 403; el 18/ago era exactamente al revés. Cada vez que se
-da vuelta, el servicio queda roto hasta que alguien lo nota — el radar estuvo
-12 días caído por eso.
+## El mapa, medido el 18/ago desde el VPS de producción
 
-Perseguir el perfil de moda es correr atrás del problema. Lo que no cambia es
-que **Cloudflare emite una cookie `cf_clearance` a quien resuelve su challenge**,
-y esa cookie:
+    ws1.smn.gob.ar        listas de frames     ✅ 6/6 directo
+    estaticos.smn.gob.ar  imágenes del radar   ✅ 6/6 directo (chrome + HTTP/3)
+    www.smn.gob.ar        el token del radar   ❌ 0/12 directo  → browser
+    ssl.smn.gob.ar        METAR/TAF/PRONAREA   ❌ 2/12 directo  → browser
 
-  - vale para `Domain=smn.gob.ar`, o sea **todos** los subdominios (`www`,
-    `ws1`, `estaticos`, `ssl`) -- un solo clearance cubre METAR, TAF, PRONAREA,
-    AEROMET y radar;
-  - trae `Expires` a un año (medido sobre un HAR real, 18/ago/2026).
+Los dos primeros salen directo y ni se enteran de que existe un browser: son lo
+pesado (~13 MB por video de radar) y pasarlos por el fetcher sería pagar RAM y
+latencia a cambio de nada.
 
-`aerobot-smn-clearance` la consigue con un browser y la deja en Redis. Este
-módulo la usa. Si no hay cookie, igual se intenta la request -- el clearance
-**suma** tasa de éxito, no es un requisito nuevo para que el SMN funcione.
+Los dos últimos están bloqueados **por la IP**, no por el fingerprint: el mismo
+código, en el mismo momento, dio 12/12 desde una IP residencial y 0/12 desde el
+VPS. Por eso ahí no alcanza con cambiar de perfil — va por `aerobot-smn-fetch`,
+que tiene un browser de verdad resolviendo el challenge.
 
-REGLAS QUE NO SE PUEDEN VIOLAR (cada una costó una medición):
+## La regla que no se negocia: nunca peor que hoy
 
-1. **El User-Agent va con la cookie.** Cloudflare valida que quien la usa sea
-   quien la obtuvo. Por eso se guardan juntos y se mandan juntos. Esta es la
-   *única* excepción a la regla de no escribir el User-Agent a mano: acá no se
-   inventa nada, se repite exactamente el del browser que sacó la cookie.
-2. **El perfil de `impersonate` tiene que ser el mismo motor que el browser.**
-   Chromium saca la cookie -> se impersona `chrome`. Un UA de Chrome sobre un
-   TLS de Firefox es justo la contradicción que Cloudflare busca.
-3. **HTTP/3.** Un browser real negocia h3 contra los cuatro hosts del SMN
-   (verificado en el HAR). Pedir por HTTP/2 es una inconsistencia gratis.
+Si el fetcher no está, o tarda, o contesta cualquier cosa, **se sale igual por
+el camino directo**. Hoy ese camino funciona 2 de cada 12 veces contra `ssl`, y
+2 de 12 es infinitamente mejor que un servicio nuevo convertido en requisito
+nuevo. Un componente que agrega un modo de falla no puede ser obligatorio.
 """
 import os
 
-from curl_cffi import requests as _curl
 from curl_cffi.const import CurlHttpVersion
 
-from .logger import get_logger
+from aerocommons import http
+from aerocommons.logger import get_logger
 
 logger = get_logger(__name__)
 
-CLAVE = "smn:clearance"
+FETCHER = os.getenv("SMN_FETCH_URL", "http://smn-fetch:60630")
 
-#: Chromium es lo que corre el servicio de clearance, así que el fingerprint
-#: TLS tiene que ser de la misma familia. Si algún día se cambia el browser,
-#: hay que cambiar esto en el mismo commit.
-IMPERSONATE = os.getenv("SMN_IMPERSONATE", "chrome")
+#: Cuánto esperar al fetcher. Un pedido que llega a arrancar el browser tarda
+#: ~25s, y el token cacheado vuelve en milisegundos. 40 cubre el peor caso sin
+#: quedarse colgado si el browser murió a mitad de camino.
+TIMEOUT_FETCHER = int(os.getenv("SMN_FETCH_TIMEOUT", "40"))
 
-URL_CLEARANCE = os.getenv(
-    "SMN_CLEARANCE_URL", "http://aerobot-smn-clearance:60630"
-)
+#: Los que el browser tiene que resolver. El resto sale directo.
+HOSTS_BLOQUEADOS = {"www.smn.gob.ar", "ssl.smn.gob.ar"}
 
-
-def _redis():
-    try:
-        import redis
-        return redis.from_url(
-            os.getenv("REDIS_URL", "redis://redis:6379/2"), decode_responses=True
-        )
-    except Exception:
-        logger.warning("Sin Redis: se sale al SMN sin clearance", exc_info=True)
-        return None
+#: Cada host del SMN está configurado distinto y son opuestos entre sí: medido,
+#: `estaticos` anda con HTTP/3 y da 403 con HTTP/2, y `www` hace exactamente lo
+#: contrario. No hay una combinación única que sirva para todo el SMN.
+PROTOCOLO = {
+    "estaticos.smn.gob.ar": CurlHttpVersion.V3,
+    "ssl.smn.gob.ar": CurlHttpVersion.V3,
+}
 
 
-def _clearance() -> tuple[str | None, str | None]:
-    r = _redis()
-    if r is None:
-        return None, None
-    try:
-        datos = r.hgetall(CLAVE)
-    except Exception:
-        logger.warning("No se pudo leer el clearance de Redis", exc_info=True)
-        return None, None
-    if not datos:
-        return None, None
-    return datos.get("cf_clearance"), datos.get("user_agent")
+def host_de(url: str) -> str:
+    return url.split("/")[2].split(":")[0] if "//" in url else ""
 
 
-def _invalidar():
-    """Se llama cuando el SMN rechaza una request que LLEVABA la cookie.
+def necesita_browser(url: str) -> bool:
+    return host_de(url) in HOSTS_BLOQUEADOS
 
-    Ese caso es distinto de un 403 cualquiera: significa que la cookie está
-    quemada, no que falte. Borrarla hace que el próximo pedido dispare una
-    renovación en vez de reintentar con algo que ya sabemos que no sirve.
+
+class _RespuestaDelBrowser:
+    """Lo que trajo el browser, con la forma de una respuesta de curl_cffi.
+
+    Existe para que quien llama no tenga que preguntarse por dónde vino: el
+    parser del METAR sigue haciendo `r.text` y no cambia una línea.
     """
-    r = _redis()
-    if r is None:
-        return
+
+    def __init__(self, status_code: int, texto: str):
+        self.status_code = status_code
+        self.text = texto
+        self.content = texto.encode("utf-8", "replace")
+        self.headers = {}
+        self.via_browser = True
+
+    def json(self):
+        import json
+        return json.loads(self.text)
+
+
+def _directo(url, headers=None, **kwargs):
+    kwargs.setdefault("http_version", PROTOCOLO.get(host_de(url)))
+    if kwargs["http_version"] is None:
+        kwargs.pop("http_version")
+    return http.get(url, headers=headers, **kwargs)
+
+
+def get(url: str, *, headers: dict | None = None, timeout: int = 30, **kwargs):
+    """Trae una URL del SMN por el camino que corresponda a su host."""
+    if not necesita_browser(url):
+        return _directo(url, headers=headers, timeout=timeout, **kwargs)
+
     try:
-        if r.delete(CLAVE):
-            logger.warning("cf_clearance quemada: se borró para forzar renovación")
+        r = http.get(f"{FETCHER}/traer", params={"url": url}, timeout=TIMEOUT_FETCHER)
+        if r.status_code == 200:
+            d = r.json()
+            return _RespuestaDelBrowser(d.get("status", 200), d.get("html", ""))
+        logger.warning("el fetcher devolvió %s para %s — se sale directo",
+                       r.status_code, url)
     except Exception:
-        logger.warning("No se pudo invalidar el clearance", exc_info=True)
+        logger.warning("el fetcher no respondió para %s — se sale directo", url,
+                       exc_info=True)
+
+    return _directo(url, headers=headers, timeout=timeout, **kwargs)
 
 
-def pedir_renovacion(timeout: int = 90) -> bool:
-    """Le pide al servicio del browser una cookie nueva. Best-effort."""
-    try:
-        import requests  # interno entre contenedores: va con requests a propósito
-        resp = requests.post(f"{URL_CLEARANCE}/renovar", timeout=timeout)
-        ok = bool(resp.json().get("ok"))
-        logger.info("Renovación de clearance pedida: ok=%s", ok)
-        return ok
-    except Exception:
-        logger.warning("No se pudo pedir la renovación del clearance", exc_info=True)
-        return False
+def token(refrescar: bool = False) -> str | None:
+    """El JWT del radar, que solo se puede sacar de `www.smn.gob.ar`.
 
-
-def get(url: str, *, headers: dict | None = None, **kwargs):
-    """GET al SMN con clearance si hay, y HTTP/3 como hace un browser real.
-
-    Devuelve la respuesta tal cual -- decidir qué hacer con un 403 es del
-    caller, que es quien sabe si tiene un fallback a mano.
+    Devuelve None en vez de lanzar: quien lo llama ya tiene que saber qué hacer
+    sin token (el flujo del radar se corta), y una excepción acá solo cambia
+    dónde se rompe.
     """
-    cookie, ua = _clearance()
-    cabeceras = dict(headers or {})
-
-    if cookie:
-        previa = cabeceras.get("cookie") or cabeceras.get("Cookie") or ""
-        cabeceras["cookie"] = f"{previa}; cf_clearance={cookie}".lstrip("; ")
-        if ua:
-            # Ver regla 1 del docstring: acá el UA no se inventa, se repite.
-            cabeceras["user-agent"] = ua
-
-    kwargs.setdefault("http_version", CurlHttpVersion.V3)
-    respuesta = _curl.get(url, impersonate=IMPERSONATE, headers=cabeceras, **kwargs)
-
-    if respuesta.status_code in (403, 503) and cookie:
-        _invalidar()
-
-    return respuesta
+    try:
+        r = http.get(f"{FETCHER}/token", params={"refrescar": str(refrescar).lower()},
+                     timeout=TIMEOUT_FETCHER)
+        if r.status_code == 200:
+            return r.json().get("token")
+        logger.error("el fetcher no pudo dar token: %s %s", r.status_code, r.text[:200])
+    except Exception:
+        logger.error("el fetcher no respondió al pedir el token", exc_info=True)
+    return None
