@@ -104,9 +104,27 @@ def get(url: str, *, headers: dict | None = None, timeout: int = 30, **kwargs):
         r = http.get(f"{FETCHER}/traer", params={"url": url}, timeout=TIMEOUT_FETCHER)
         if r.status_code == 200:
             d = r.json()
-            return _RespuestaDelBrowser(d.get("status", 200), d.get("html", ""))
-        logger.warning("el fetcher devolvió %s para %s — se sale directo",
-                       r.status_code, url)
+            # Hay DOS status en juego y el que importa es el de adentro.
+            # `r.status_code` dice si el fetcher contestó; `d["status"]` dice
+            # qué le contestó el SMN al browser. Un fetcher sano que reporta
+            # "el SMN me sirvió un challenge" viene como 200 con status 403
+            # adentro, y devolver eso es entregar el HTML de Cloudflare como si
+            # fuera el reporte: `WeatherParser` lo parsea, saca [] y le dice al
+            # usuario "no encontré datos" — el mismo bug que `_es_challenge`
+            # arregló del lado directo, reentrando por la puerta de atrás.
+            #
+            # Medido sobre las 115 rondas de la sonda (19-23/ago/2026): en 12
+            # de ellas el browser trajo 403 y el camino directo funcionaba. Sin
+            # este chequeo esas 12 se pierden teniendo el dato a mano, que es
+            # exactamente lo que la regla de arriba promete que no pasa.
+            estado_smn = d.get("status", 200)
+            if estado_smn == 200:
+                return _RespuestaDelBrowser(estado_smn, d.get("html", ""))
+            logger.warning("el browser trajo %s del SMN para %s — se sale directo",
+                           estado_smn, url)
+        else:
+            logger.warning("el fetcher devolvió %s para %s — se sale directo",
+                           r.status_code, url)
     except Exception:
         logger.warning("el fetcher no respondió para %s — se sale directo", url,
                        exc_info=True)
